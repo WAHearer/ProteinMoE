@@ -17,8 +17,6 @@ alphabet = "LAGVSERTIDPKQNFYMHWC"
 foldseek_struc_vocab = "pynwrqhgdlvtmfsaeikc#"
 num_experts = 4
 epochs = 30 #训练轮数
-num_tokens = 446 #字符集大小
-longest_seq = 3423 #最长蛋白质序列
 d_model = 20 * num_experts #encoder维度
 nhead = 8 #多头注意力头数
 dim_feedforward = 512 #前馈网络维度
@@ -301,7 +299,7 @@ def main():
         torch.save(model.state_dict(), f"train/model_epoch_{epoch+1}.pth")
     f.close()
 
-    
+
     model.eval()
     mapping_protein_seq_DMS = pd.read_csv("DMS_substitutions.csv")
     list_DMS = mapping_protein_seq_DMS["DMS_id"]
