@@ -346,7 +346,7 @@ def main():
             mask_seq = " ".join(SaProt_tokens_masked)
             SaProt_inputs = SaProt_tokenizer(mask_seq, return_tensors="pt")
             SaProt_inputs = {k: v.to(device) for k, v in SaProt_inputs.items()}
-            ProSST_seq.replace("#", "<mask>")
+            ProSST_seq = ProSST_seq.replace("#", "<mask>")
             ProSST_tokenized_results = ProSST_tokenizer([ProSST_seq], return_tensors="pt")
             ProSST_input_ids = ProSST_tokenized_results["input_ids"].to(device)
             ProSST_attention_mask = ProSST_tokenized_results["attention_mask"].to(device)
