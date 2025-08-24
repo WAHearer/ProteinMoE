@@ -16,15 +16,13 @@ import math
 alphabet = "LAGVSERTIDPKQNFYMHWC"
 foldseek_struc_vocab = "pynwrqhgdlvtmfsaeikc#"
 num_experts = 4
-epochs = 30 #训练轮数
+epochs = 50 #训练轮数
 d_model = 20 * num_experts #encoder维度
 nhead = 8 #多头注意力头数
 dim_feedforward = 512 #前馈网络维度
 dropout = 0.3 #dropout率
-num_layers = 6 #Transformer encoder层数
-device = torch.device("cuda:1")
-temp = 1
-eps = 1e-8
+num_layers = 8 #Transformer encoder层数
+device = torch.device("cuda:2")
 
 #ESM
 model_ESM, ESM_alphabet = pretrained.load_model_and_alphabet("esm2_t33_650M_UR50D")
@@ -50,6 +48,7 @@ model_ProSST_2048.eval()
 
 #ProSST-4096
 model_ProSST_4096 = AutoModelForMaskedLM.from_pretrained("ProSST-4096", trust_remote_code=True).to(device)
+ProSST_tokenizer = AutoTokenizer.from_pretrained("ProSST-4096", trust_remote_code=True)
 for param in model_ProSST_4096.parameters():
     param.requires_grad = False
 model_ProSST_4096.eval()
@@ -73,7 +72,7 @@ def calc(row, sequence, token_probs, alphabet, offset_idx):
 
         wt_encoded, mt_encoded = alphabet.get_idx(wt)-4, alphabet.get_idx(mt)-4
         # add 1 for BOS
-        score += torch.log(token_probs[0, 1 + idx, mt_encoded] / token_probs[0, 1 + idx, wt_encoded])
+        score += token_probs[0, 1 + idx, mt_encoded] - token_probs[0, 1 + idx, wt_encoded]
     return score.item()
 
 def get_mutated_sequence(focus_seq, mutant, start_idx=1, AA_vocab="ACDEFGHIKLMNPQRSTVWY"):
@@ -125,11 +124,11 @@ class MoE(nn.Module):
     def forward(self, ESM_input, SaProt_input, ProSST_input_ids, ProSST_attention_mask, ProSST_2048_ss_input_ids, ProSST_4096_ss_input_ids, start_pos=0):
         #ESM
         ESM_output = model_ESM(ESM_input)["logits"][:, :, 4: 24]
-        ESM_output = F.softmax(ESM_output, dim=-1)
+        #ESM_output = F.softmax(ESM_output, dim=-1)
 
         #SaProt
         SaProt_output = model_SaProt(**SaProt_input).logits
-        SaProt_output = SaProt_output.softmax(dim=-1)
+        #SaProt_output = SaProt_output.softmax(dim=-1)
         SaProt_output_aligned = torch.zeros(SaProt_output.shape[0], SaProt_output.shape[1], 20).to(device)
         for i in range(20):
             st = SaProt_tokenizer.get_vocab()[alphabet[i] + foldseek_struc_vocab[0]]
@@ -140,7 +139,7 @@ class MoE(nn.Module):
         if SaProt_output_aligned.shape[1] < ESM_output.shape[1]:
             zeros = torch.zeros(SaProt_output_aligned.shape[0], ESM_output.shape[1] - SaProt_output_aligned.shape[1], 20).to(device)
             SaProt_output_aligned = torch.cat([SaProt_output_aligned, zeros], dim=1)
-
+        
         #ProSST-2048
         ProSST_2048_output = model_ProSST_2048(
             input_ids = ProSST_input_ids,
@@ -148,10 +147,10 @@ class MoE(nn.Module):
             ss_input_ids = ProSST_2048_ss_input_ids,
             labels = ProSST_input_ids
         ).logits
-        ProSST_2048_output = ProSST_2048_output.softmax(dim=-1)
         ProSST_2048_output_aligned = torch.zeros(ProSST_2048_output.shape[0], ProSST_2048_output.shape[1], 20).to(device)
         for i in range(20):
             ProSST_2048_output_aligned[:, :, i] = ProSST_2048_output[:, :, esm_vocab_to_prosst[i]]
+        #ProSST_2048_output_aligned = ProSST_2048_output_aligned.softmax(dim=-1)
         if start_pos > 0:
             zeros = torch.zeros(ProSST_2048_output_aligned.shape[0], start_pos, 20).to(device)
             ProSST_2048_output_aligned = torch.cat([zeros, ProSST_2048_output_aligned], dim=1)
@@ -166,7 +165,6 @@ class MoE(nn.Module):
             ss_input_ids = ProSST_4096_ss_input_ids,
             labels = ProSST_input_ids
         ).logits
-        ProSST_4096_output = ProSST_4096_output.softmax(dim=-1)
         ProSST_4096_output_aligned = torch.zeros(ProSST_4096_output.shape[0], ProSST_4096_output.shape[1], 20).to(device)
         for i in range(20):
             ProSST_4096_output_aligned[:, :, i] = ProSST_4096_output[:, :, esm_vocab_to_prosst[i]]
@@ -179,19 +177,18 @@ class MoE(nn.Module):
 
         outputs = torch.cat([ESM_output, SaProt_output_aligned, ProSST_2048_output_aligned, ProSST_4096_output_aligned], dim=-1)
         router_output = self.router(outputs)
-        weights = F.softmax(router_output/temp, dim=-1)
         stacked_outputs = torch.cat([ESM_output, SaProt_output_aligned, ProSST_2048_output_aligned, ProSST_4096_output_aligned], dim=0)
-        weights = weights.squeeze(0)
-        weighted_sum = torch.einsum('ijk,ji->jk', stacked_outputs, weights)
+        router_output = router_output.squeeze(0)
+        weighted_sum = torch.einsum('ijk,ji->jk', stacked_outputs, router_output)
         weighted_sum = weighted_sum.unsqueeze(0)
-        return weighted_sum, ESM_output, SaProt_output_aligned, ProSST_2048_output_aligned, ProSST_4096_output_aligned, weights
+        return weighted_sum, ESM_output, SaProt_output_aligned, ProSST_2048_output_aligned, ProSST_4096_output_aligned, router_output
 
 def main():
     model = MoE(num_experts=num_experts)
     model = model.to(device)
     model.train()
     optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
-    loss_fn = nn.NLLLoss()
+    loss_fn = nn.CrossEntropyLoss()
     st, ed = [], []
     seqs = []
     with open("cath_data/cath-domain-seqs-v4_4_0.fa", "r") as handle:
@@ -211,10 +208,9 @@ def main():
             if id[4:5].isdigit():
                 index += 1
                 continue
-            if not os.path.exists("cath_data/struc_seq_2048/"+id) or not os.path.exists("cath_data/struc_seq_4096/"+id):
+            if not os.path.exists("cath_data/struc_seq_2048/"+id):
                 index += 1
                 continue
-            
             #get masked sequence
             seq = record
             pick_pos = random.sample(range(st[index] - 1,ed[index]), round(0.15 * (ed[index] - st[index] + 1)))
@@ -238,7 +234,6 @@ def main():
             _, _, truth = ESM_batch_converter(data)
             ESM_input = ESM_input.to(device)
             truth = truth.to(device)
-
             #SaProt
             struc_seq = get_struc_seq("foldseek/bin/foldseek", f"cath_data/dompdb/{id}", [id[4:5]], plddt_mask=False, plddt_threshold=70)[id[4:5]][1].lower()
             seq_split = seq[st[index] - 1: ed[index]]
@@ -276,29 +271,26 @@ def main():
             
             #train
             output, esm, saprot, prosst_2048, prosst_4096, weights = model.forward(ESM_input, SaProt_input, ProSST_input_ids, ProSST_attention_mask, ProSST_2048_ss_input_ids, ProSST_4096_ss_input_ids, start_pos=st[index] - 1)
+            pick_pos = [p + 1 for p in pick_pos]
             #for pos in pick_pos:
             #    print(f"{esm[0, pos, truth[0, pos] - 4]} {saprot[0, pos, truth[0, pos] - 4]} {prosst_2048[0, pos, truth[0, pos] - 4]} {prosst_4096[0, pos, truth[0, pos] - 4]} {output[0, pos, truth[0, pos] - 4]}")
             #    print(weights[pos])
-            pick_pos = [p + 1 for p in pick_pos]
             preds=torch.zeros(len(pick_pos),20).to(device)
             for i in range(len(pick_pos)):
                 preds[i]=output[0, pick_pos[i]]
             labels = torch.tensor([truth[0, p] - 4 for p in pick_pos]).to(device)
-            preds = torch.log(preds + eps)
             loss = loss_fn(preds, labels)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             cnt += 1
             sumloss += loss
-            
             if cnt % 1000 == 0:
                 f.write(f"Epoch {epoch+1} Processed {index+1}/{len(seqs)} sequences, avg Loss: {sumloss/cnt:.4f}\n")
                 f.flush()
             index += 1
         torch.save(model.state_dict(), f"train/model_epoch_{epoch+1}.pth")
     f.close()
-
 
     model.eval()
     mapping_protein_seq_DMS = pd.read_csv("DMS_substitutions.csv")
@@ -328,10 +320,14 @@ def main():
         with open("ProteinGym_struc_2048/"+prosst_struc_file_name) as file:
             struc_seq_2048 = file.readline()
         struc_seq_2048 = [int(i) for i in struc_seq_2048.split()]
+        if len(struc_seq_2048) > len(target_seq_split):
+            struc_seq_2048 = struc_seq_2048[:len(target_seq_split)]
         ProSST_2048_ss_input_ids = tokenize_structure_sequence(struc_seq_2048).to(device)
         with open("ProteinGym_struc_4096/"+prosst_struc_file_name) as file:
             struc_seq_4096 = file.readline()
         struc_seq_4096 = [int(i) for i in struc_seq_4096.split()]
+        if len(struc_seq_4096) > len(target_seq_split):
+            struc_seq_4096 = struc_seq_4096[:len(target_seq_split)]
         ProSST_4096_ss_input_ids = tokenize_structure_sequence(struc_seq_4096).to(device)
         model_scores = []
         for mut_info in df["mutant"]:
