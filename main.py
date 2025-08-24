@@ -13,6 +13,7 @@ import re
 import random
 import math
 
+os.environ['TORCH_HOME'] = '/data/zhangtianhe'
 alphabet = "LAGVSERTIDPKQNFYMHWC"
 foldseek_struc_vocab = "pynwrqhgdlvtmfsaeikc#"
 num_experts = 4
@@ -124,11 +125,9 @@ class MoE(nn.Module):
     def forward(self, ESM_input, SaProt_input, ProSST_input_ids, ProSST_attention_mask, ProSST_2048_ss_input_ids, ProSST_4096_ss_input_ids, start_pos=0):
         #ESM
         ESM_output = model_ESM(ESM_input)["logits"][:, :, 4: 24]
-        #ESM_output = F.softmax(ESM_output, dim=-1)
 
         #SaProt
         SaProt_output = model_SaProt(**SaProt_input).logits
-        #SaProt_output = SaProt_output.softmax(dim=-1)
         SaProt_output_aligned = torch.zeros(SaProt_output.shape[0], SaProt_output.shape[1], 20).to(device)
         for i in range(20):
             st = SaProt_tokenizer.get_vocab()[alphabet[i] + foldseek_struc_vocab[0]]
@@ -150,7 +149,6 @@ class MoE(nn.Module):
         ProSST_2048_output_aligned = torch.zeros(ProSST_2048_output.shape[0], ProSST_2048_output.shape[1], 20).to(device)
         for i in range(20):
             ProSST_2048_output_aligned[:, :, i] = ProSST_2048_output[:, :, esm_vocab_to_prosst[i]]
-        #ProSST_2048_output_aligned = ProSST_2048_output_aligned.softmax(dim=-1)
         if start_pos > 0:
             zeros = torch.zeros(ProSST_2048_output_aligned.shape[0], start_pos, 20).to(device)
             ProSST_2048_output_aligned = torch.cat([zeros, ProSST_2048_output_aligned], dim=1)
