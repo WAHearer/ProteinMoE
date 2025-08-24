@@ -13,7 +13,6 @@ import re
 import random
 import math
 
-os.environ['TORCH_HOME'] = '/data/zhangtianhe'
 alphabet = "LAGVSERTIDPKQNFYMHWC"
 foldseek_struc_vocab = "pynwrqhgdlvtmfsaeikc#"
 num_experts = 4
