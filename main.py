@@ -30,7 +30,6 @@ from esm.utils.constants.models import (
 from esm.sdk.api import ESMProtein, LogitsConfig
 from esm.utils.structure.protein_chain import ProteinChain
 
-os.environ['TORCH_HOME'] = '/data/zhangtianhe'
 alphabet = "LAGVSERTIDPKQNFYMHWC"
 foldseek_struc_vocab = "pynwrqhgdlvtmfsaeikc#"
 num_experts = 3
